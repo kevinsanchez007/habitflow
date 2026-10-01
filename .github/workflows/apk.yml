@@ -20,7 +20,8 @@ jobs:
         with: { distribution: temurin, java-version: 21 }
       - run: npm ci || npm install
       - name: Número de versión dentro de la app
-        run: echo "{\"build\": ${{ github.run_number }}}" > www/version.json
+        run: |
+          echo '{"build": ${{ github.run_number }}}' > www/version.json
       - run: npx cap sync android
       - name: Llave de firma (desde los secretos del repositorio)
         env:
