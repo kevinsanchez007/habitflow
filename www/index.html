@@ -278,7 +278,7 @@ details.tpl[open] .tbody{animation:rise .25s ease-out}
             7) Sincronización  8) Recordatorios  9) Animaciones  10) Vistas
    ===================================================================== */
 
-const MAX_ACTIVOS = 5;          // RN-04
+const MAX_ACTIVOS = 15;         // RN-04 (antes 5; ampliado a 15 a pedido del equipo)
 const DIAS_EDITABLES = 2;       // RN-02 (hoy + 2 días atrás)
 const XP_CHECKIN = 10, XP_NIVEL = 100;
 const PBKDF2_ITER = 150000;
@@ -765,8 +765,11 @@ const SEEN_KEY = "habitflow:seenBuild";
 async function loadVersion() {
   try { APP_BUILD = (await (await fetch("version.json", { cache: "no-store" })).json()).build || null; } catch {}
   try { NEWS = await (await fetch("novedades.json", { cache: "no-store" })).json(); } catch {}
+  // Primera vez que se abre la app en este celular: no hay "novedades" que contar, solo se guarda la versión.
+  // Las novedades aparecen únicamente cuando alguien que ya tenía la app actualiza a una versión más nueva.
+  if (APP_BUILD && lsGet(SEEN_KEY) == null) lsSet(SEEN_KEY, APP_BUILD);
 }
-function pendingNews() { return APP_BUILD && NEWS && NEWS.items && NEWS.items.length && lsGet(SEEN_KEY) !== APP_BUILD ? NEWS : null; }
+function pendingNews() { const seen = lsGet(SEEN_KEY); return APP_BUILD && NEWS && NEWS.items && NEWS.items.length && seen != null && seen < APP_BUILD ? NEWS : null; }
 async function checkUpdate() {
   if (!window.Capacitor || !navigator.onLine || Date.now() - updateCheckedAt < 3600e3) return;
   updateCheckedAt = Date.now();
