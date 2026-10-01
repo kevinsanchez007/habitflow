@@ -8,6 +8,7 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<script src="firebase.js"></script>
 </head>
 <body>
 <title>HabitFlow</title>
@@ -395,11 +396,17 @@ async function unseal(key, iv, ct) {
 }
 function withTimeout(p, ms) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej({ code: "timeout" }), ms))]); }
 
-/* Dónde viven las cuentas: en la nube si la app corre en el enlace publicado;
-   en el propio dispositivo si se abre la versión independiente. */
+/* Dónde viven las cuentas:
+   - "firebase": app Android. Firebase Authentication maneja correo y contraseña,
+     y el progreso vive en Firestore users/<uid>, protegido por reglas por usuario.
+   - "cloud": enlace publicado (cuentas propias cifradas, ver arriba).
+   - "local": versión independiente, todo en el propio dispositivo. */
+const FB = window.HF_FB || null;
 const Backend = {
   mode: "local", db: null, ready: null,
+  isRemote() { return this.mode !== "local"; },
   init() {
+    if (FB) { this.mode = "firebase"; this.ready = FB.auth.authStateReady().catch(() => {}); return this.ready; }
     this.ready = (async () => {
       try {
         if (window.claude && typeof window.claude.use === "function") {
@@ -410,23 +417,38 @@ const Backend = {
     })();
     return this.ready;
   },
-  ref(id) { return this.db.doc("accounts/" + id); },
+  ref(id) { return this.mode === "firebase" ? FB.doc(FB.db, "users", id) : this.db.doc("accounts/" + id); },
+  // Empaqueta el progreso para la nube y lo desempaqueta al leerlo
+  async pack(state) {
+    if (this.mode === "firebase") return { v: 3, name: state.profile.name, email: state.profile.email, habitos: state.habits.filter(h => !h.archivedAt).length, data: JSON.stringify(state), updatedAt: state.updatedAt };
+    return Object.assign({ v: 2 }, Auth.session.meta, await seal(Auth.key, state), { updatedAt: state.updatedAt });
+  },
+  async unpack(d) { return this.mode === "firebase" ? JSON.parse(d.data) : unseal(Auth.key, d.iv, d.ct); },
   async get(id) {
     await this.ready;
+    if (this.mode === "firebase") { const s = await withTimeout(FB.getDoc(this.ref(id)), 12000); return s.exists() ? s.data() : null; }
     if (this.mode === "cloud") { const s = await withTimeout(this.ref(id).get(), 12000); return s.exists ? s.data() : null; }
     return lsGet("habitflow:acct:" + id);
   },
   async put(id, body) {
     await this.ready;
+    if (this.mode === "firebase") return withTimeout(FB.setDoc(this.ref(id), body), 15000);
     if (this.mode === "cloud") return this.ref(id).set(body);
     if (!lsSet("habitflow:acct:" + id, body)) throw { code: "storage" };
   },
   async remove(id) {
     await this.ready;
+    if (this.mode === "firebase") {
+      await withTimeout(FB.deleteDoc(this.ref(id)), 20000);
+      try { await FB.deleteUser(FB.auth.currentUser); }
+      catch (e) { if (e && e.code === "auth/requires-recent-login") throw { code: "relogin" }; throw e; }
+      return;
+    }
     if (this.mode === "cloud") return this.ref(id).delete();
     lsDel("habitflow:acct:" + id);
   },
   watch(id, fn) {
+    if (this.mode === "firebase") return FB.onSnapshot(this.ref(id), s => { if (s.exists() && !s.metadata.hasPendingWrites) fn(s.data()); }, () => {});
     if (this.mode !== "cloud") return null;
     return this.ref(id).onSnapshot(s => { if (s.exists && !s.metadata.hasPendingWrites) fn(s.data()); }, () => {});
   }
@@ -436,17 +458,38 @@ const Auth = {
   session: null, key: null,
   async start(session, keyRaw) {
     this.session = session;
-    this.key = await aesKey(keyRaw);
+    this.key = keyRaw ? await aesKey(keyRaw) : null;
     lsSet(SESSION_KEY, session);
   },
   async restore() {
     const s = lsGet(SESSION_KEY);
+    if (s && s.fb && FB) { await this.start(s); return true; }
+    // Sesión de la versión anterior (sin Firebase): se conserva su progreso para importarlo al crear la cuenta
+    if (s && !s.fb && FB) { const c = lsGet(cacheKey(s.id)); if (c) S = normalize(c); lsDel(SESSION_KEY); authMode = "register"; authMsg = "La app ahora usa cuentas de Firebase. Crea tu cuenta: tu progreso de este celular se pasa solo."; return false; }
     if (!s || !s.id || !s.keyB64) return false;
     try { await this.start(s, fromB64(s.keyB64)); return true; } catch { lsDel(SESSION_KEY); return false; }
   },
-  clear(keepCache) { if (this.session && !keepCache) lsDel(cacheKey(this.session.id)); this.session = null; this.key = null; lsDel(SESSION_KEY); }
+  clear(keepCache) {
+    if (this.session && !keepCache) lsDel(cacheKey(this.session.id));
+    this.session = null; this.key = null; lsDel(SESSION_KEY);
+    if (FB && FB.auth.currentUser) FB.signOut(FB.auth).catch(() => {});
+  }
+};
+const FB_ERRORS = {
+  "auth/email-already-in-use": "Ya existe una cuenta con ese correo. Inicia sesión.",
+  "auth/invalid-credential": "El correo o la contraseña no son correctos.",
+  "auth/wrong-password": "La contraseña no es correcta.",
+  "auth/user-not-found": "No hay una cuenta con ese correo. Revisa el correo o crea una cuenta.",
+  "auth/invalid-email": "Escribe un correo válido, por ejemplo nombre@gmail.com.",
+  "auth/weak-password": "La contraseña es muy débil. Usa mínimo 8 caracteres.",
+  "auth/too-many-requests": "Demasiados intentos seguidos. Espera unos minutos e inténtalo otra vez.",
+  "auth/network-request-failed": "No se pudo conectar con la nube. Revisa tu internet e inténtalo otra vez.",
+  "auth/user-disabled": "Esta cuenta fue desactivada.",
+  "permission-denied": "La nube rechazó el acceso. Revisa las reglas de Firestore.",
+  "unavailable": "No se pudo conectar con la nube. Revisa tu internet e inténtalo otra vez."
 };
 function authError(e) {
+  if (e && FB_ERRORS[e.code]) return FB_ERRORS[e.code];
   if (e && e.code === "timeout") return "No se pudo conectar con la nube. Revisa tu internet e inténtalo otra vez.";
   if (e && e.code === "quota_exceeded") return "La nube de la app está llena. Avísale al equipo.";
   if (e && e.code === "invalid_argument") return "Tu acceso a este enlace es de solo lectura. Pide permiso de Colaborador a quien te lo compartió.";
@@ -466,7 +509,8 @@ function legacyState() {
   return best;
 }
 async function register(name, email, password) {
-  if (Backend.mode === "cloud" && !navigator.onLine) throw { msg: "Necesitas internet para crear la cuenta." };
+  if (Backend.isRemote() && !navigator.onLine) throw { msg: "Necesitas internet para crear la cuenta." };
+  if (Backend.mode === "firebase") return registerFirebase(name, email, password);
   const id = await accountId(email);
   if (await Backend.get(id)) throw { msg: "Ya existe una cuenta con ese correo. Inicia sesión." };
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -478,13 +522,45 @@ async function register(name, email, password) {
   S.updatedAt = Date.now();
   const meta = { salt: toB64(salt), iter: PBKDF2_ITER, verifier, createdAt: new Date().toISOString() };
   await Auth.start({ id, email: S.profile.email, keyB64: toB64(keyRaw), meta }, keyRaw);
-  const box = await seal(Auth.key, S);
-  await Backend.put(id, Object.assign({ v: 2 }, meta, box, { updatedAt: S.updatedAt }));
+  await Backend.put(id, await Backend.pack(S));
   evaluateBadges(); freshBadges = [];
   saveLocal();
 }
+function startState(name, email) {
+  const base = (!Auth.session && S.habits.length && !S.sample) ? S : legacyState();
+  const st = normalize(base || emptyState());
+  st.sample = false;
+  st.profile = { name, email };
+  st.updatedAt = Date.now();
+  return st;
+}
+async function registerFirebase(name, email, password) {
+  const cred = await FB.createUserWithEmailAndPassword(FB.auth, email.trim(), password);
+  FB.updateProfile(cred.user, { displayName: name }).catch(() => {});
+  S = startState(name, email.trim().toLowerCase());
+  await Auth.start({ id: cred.user.uid, email: S.profile.email, fb: true });
+  saveLocal();
+  try { await Backend.put(cred.user.uid, await Backend.pack(S)); } catch { Sync.pending = true; }
+  evaluateBadges(); freshBadges = [];
+  saveLocal();
+}
+async function loginFirebase(email, password) {
+  const cred = await FB.signInWithEmailAndPassword(FB.auth, email.trim(), password);
+  const id = cred.user.uid, em = email.trim().toLowerCase();
+  await Auth.start({ id, email: em, fb: true });
+  const doc = await Backend.get(id);
+  if (doc) S = normalize(await Backend.unpack(doc));
+  else { S = startState(cred.user.displayName || em.split("@")[0], em); Sync.pending = true; }
+  const cached = lsGet(cacheKey(id));
+  if (cached && (cached.updatedAt || 0) > (S.updatedAt || 0)) { S = normalize(cached); Sync.pending = true; }
+  saveLocal();
+}
+async function resetPassword(email) {
+  await FB.sendPasswordResetEmail(FB.auth, email.trim());
+}
 async function login(email, password) {
-  if (Backend.mode === "cloud" && !navigator.onLine) throw { msg: "Necesitas internet para iniciar sesión en este dispositivo." };
+  if (Backend.isRemote() && !navigator.onLine) throw { msg: "Necesitas internet para iniciar sesión en este dispositivo." };
+  if (Backend.mode === "firebase") return loginFirebase(email, password);
   const id = await accountId(email);
   const doc = await Backend.get(id);
   if (!doc) throw { msg: "No hay una cuenta con ese correo. Revisa el correo o crea una cuenta." };
@@ -492,13 +568,13 @@ async function login(email, password) {
   if (verifier !== doc.verifier) throw { msg: "La contraseña no es correcta." };
   const meta = { salt: doc.salt, iter: doc.iter, verifier: doc.verifier, createdAt: doc.createdAt };
   await Auth.start({ id, email: email.trim().toLowerCase(), keyB64: toB64(keyRaw), meta }, keyRaw);
-  S = normalize(await unseal(Auth.key, doc.iv, doc.ct));
+  S = normalize(await Backend.unpack(doc));
   const cached = lsGet(cacheKey(id));
   if (cached && (cached.updatedAt || 0) > (S.updatedAt || 0)) { S = normalize(cached); Sync.pending = true; }
   saveLocal();
 }
 async function logout(message, force) {
-  if (!force && Sync.pending && Backend.mode === "cloud" && !navigator.onLine) { showToast("Conéctate a internet antes de cerrar sesión para no perder tus últimos cambios.", 4500); return; }
+  if (!force && Sync.pending && Backend.isRemote() && !navigator.onLine) { showToast("Conéctate a internet antes de cerrar sesión para no perder tus últimos cambios.", 4500); return; }
   if (!force && Sync.pending) { try { await Sync.flush(); } catch {} }
   Sync.stop();
   Auth.clear();
@@ -529,17 +605,16 @@ const Sync = {
   },
   async flush() {
     if (!Auth.session || this.busy || !this.pending) return;
-    if (Backend.mode === "cloud" && !navigator.onLine) { refreshSyncBadge(); return; }
+    if (Backend.isRemote() && !navigator.onLine) { refreshSyncBadge(); return; }
     this.busy = true; this.pending = false;
     const id = Auth.session.id;
     const t0 = performance.now();
     try {
-      const box = await seal(Auth.key, S);
-      await Backend.put(id, Object.assign({ v: 2 }, Auth.session.meta, box, { updatedAt: S.updatedAt }));
+      await Backend.put(id, await Backend.pack(S));
       this.lastMs = performance.now() - t0;
       this.lastAt = nowHMS().slice(0, 5);
       this.failed = false;
-      if (Backend.mode === "cloud") {
+      if (Backend.isRemote()) {
         recordMetric("sync", this.lastMs, { net: (navigator.connection && navigator.connection.effectiveType) || "desconocida" });
         saveLocal();
       }
@@ -560,7 +635,7 @@ const Sync = {
     this.unsub = Backend.watch(id, async d => {
       if (!Auth.session || Auth.session.id !== id) return;
       if ((d.updatedAt || 0) > (S.updatedAt || 0) && !this.pending && !this.busy) {
-        try { S = normalize(await unseal(Auth.key, d.iv, d.ct)); saveLocal(); render(); } catch {}
+        try { S = normalize(await Backend.unpack(d)); saveLocal(); render(); } catch {}
       }
     });
   },
@@ -823,7 +898,13 @@ function viewAuth() {
     el("div", { class: "field" }, el("label", { for: "a-pass" }, "Contraseña"), el("div", { class: "pw" }, pass, showBtn)),
     reg ? el("div", { class: "field" }, el("label", { for: "a-pass2" }, "Confirmar contraseña"), pass2) : null,
     err, submit,
-    reg ? el("p", { class: "hint", style: "margin:0" }, "Tu progreso se guarda cifrado con tu contraseña. Si la olvidas no se puede recuperar.") : null);
+    reg ? el("p", { class: "hint", style: "margin:0" }, Backend.mode === "firebase" ? "Tu cuenta queda registrada con Firebase. Si olvidas la contraseña, la recuperas con tu correo." : "Tu progreso se guarda cifrado con tu contraseña. Si la olvidas no se puede recuperar.") : null,
+    (!reg && Backend.mode === "firebase") ? btn("¿Olvidaste tu contraseña?", "btn small ghost", async () => {
+      const em = email.value.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) { err.textContent = authMsg = "Escribe tu correo arriba y toca otra vez “¿Olvidaste tu contraseña?”."; email.focus(); return; }
+      try { await resetPassword(em); err.textContent = authMsg = ""; showToast("Si el correo tiene cuenta, te llegó un enlace para crear una contraseña nueva. Revisa también spam.", 5000); }
+      catch (x) { err.textContent = authMsg = authError(x); }
+    }) : null);
   return [el("section", { class: "auth" },
     el("div", { class: "brand" }, el("span", { html: LOGO }), el("div", {}, el("h1", {}, "HabitFlow"), el("p", { class: "tag" }, "Tus hábitos, tu racha, tu progreso."))),
     el("div", { class: "seg", role: "group", "aria-label": "Tipo de acceso" },
@@ -833,7 +914,7 @@ function viewAuth() {
     el("div", { class: "stack", style: "gap:10px" },
       el("div", { class: "or" }, "o"),
       btn("Probar con datos de ejemplo", "btn ghost block", () => { Auth.clear(); S = sampleData(); evaluateBadges(); freshBadges = []; screen = "app"; tab = "hoy"; render(); }),
-      el("span", { class: "hint", style: "text-align:center" }, Backend.mode === "cloud" ? "Tu cuenta funciona en cualquier celular con este enlace." : "En esta versión la cuenta vive en este dispositivo.")))];
+      el("span", { class: "hint", style: "text-align:center" }, Backend.mode === "firebase" ? "Tu cuenta funciona en cualquier celular con HabitFlow." : Backend.isRemote() ? "Tu cuenta funciona en cualquier celular con este enlace." : "En esta versión la cuenta vive en este dispositivo.")))];
 }
 
 function viewHoy() {
@@ -1114,9 +1195,12 @@ function viewPerfil() {
           if (!confirmDelete) { confirmDelete = true; render(); setTimeout(() => { confirmDelete = false; if (tab === "perfil") render(); }, 4000); return; }
           confirmDelete = false;
           try { await Backend.remove(Auth.session.id); Sync.pending = false; await logout("Tu cuenta y tu progreso fueron eliminados.", true); }
-          catch { showToast("No se pudo eliminar la cuenta. Revisa tu internet.", 4000); }
+          catch (x) {
+            if (x && x.code === "relogin") { Sync.pending = false; await logout("Tu progreso fue eliminado. Para borrar también el usuario, inicia sesión otra vez y toca Eliminar mi cuenta.", true); }
+            else showToast("No se pudo eliminar la cuenta. Revisa tu internet.", 4000);
+          }
         })) : null),
-    el("p", { class: "muted", style: "font-size:.8rem;margin:0" }, "HabitFlow · prototipo MVP. Los cambios se guardan primero en el celular y luego se envían cifrados a la nube.")
+    el("p", { class: "muted", style: "font-size:.8rem;margin:0" }, Backend.mode === "firebase" ? "HabitFlow · MVP. Los cambios se guardan primero en el celular y luego se envían a Firebase (Firestore)." : "HabitFlow · prototipo MVP. Los cambios se guardan primero en el celular y luego se envían cifrados a la nube.")
   ];
 }
 
@@ -1154,9 +1238,14 @@ function render() {
     afterPaint(() => { recordMetric("load", performance.now()); saveLocal(); });
     // Trae la versión de la nube si es más reciente
     try {
+      if (Backend.mode === "firebase") {
+        await Backend.ready;
+        const u = FB.auth.currentUser;
+        if (!u || u.uid !== Auth.session.id) { await logout("Tu sesión terminó. Inicia sesión otra vez.", true); throw { code: "signed-out" }; }
+      }
       const doc = await Backend.get(Auth.session.id);
-      if (!doc) { if (Backend.mode === "cloud") await logout("Tu cuenta ya no existe en la nube. Crea una nueva o inicia sesión.", true); }
-      else if ((doc.updatedAt || 0) > (S.updatedAt || 0)) { S = normalize(await unseal(Auth.key, doc.iv, doc.ct)); saveLocal(); render(); }
+      if (!doc) { if (Backend.mode === "firebase") { Sync.pending = true; Sync.flush(); } else if (Backend.isRemote()) await logout("Tu cuenta ya no existe en la nube. Crea una nueva o inicia sesión.", true); }
+      else if ((doc.updatedAt || 0) > (S.updatedAt || 0)) { S = normalize(await Backend.unpack(doc)); saveLocal(); render(); }
       else if ((S.updatedAt || 0) > (doc.updatedAt || 0)) { Sync.pending = true; Sync.flush(); }
     } catch { /* sin conexión: se usa la copia del celular */ }
     if (Auth.session) Sync.start();
@@ -1171,7 +1260,5 @@ function render() {
 })();
 </script>
 
-<script>if("serviceWorker" in navigator){addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}))}
-if("Notification" in window && Notification.permission==="default"){addEventListener("click",()=>{try{Notification.requestPermission()}catch(e){}},{once:true})}</script>
 </body>
 </html>

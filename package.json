@@ -5,15 +5,18 @@
   "description": "HabitFlow: app de hábitos (Android con Capacitor)",
   "scripts": {
     "sync": "npx cap sync android",
-    "open": "npx cap open android"
+    "open": "npx cap open android",
+    "build:firebase": "esbuild src/firebase.js --bundle --minify --format=iife --target=es2020 --outfile=www/firebase.js"
   },
   "dependencies": {
     "@capacitor/android": "^7.0.0",
     "@capacitor/core": "^7.0.0",
+    "@capacitor/haptics": "^7.0.0",
     "@capacitor/local-notifications": "^7.0.0",
-    "@capacitor/haptics": "^7.0.0"
+    "firebase": "^11.10.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0"
+    "@capacitor/cli": "^7.0.0",
+    "esbuild": "^0.28.2"
   }
 }
