@@ -1,7 +1,7 @@
 {
   "titulo": "Novedades de esta versión",
   "items": [
-    "En Hábitos, cada hábito muestra solo su nombre. Tócalo para ver sus días, hora y recordatorio.",
-    "Las rutinas se cierran solas después de agregarlas."
+    "Ahora te avisamos de cada actualización aunque la app esté cerrada.",
+    "Al tocar ese aviso se descarga la versión nueva."
   ]
 }

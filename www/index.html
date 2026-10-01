@@ -839,8 +839,27 @@ function scheduleNative() {
     } catch {}
   }, 800);
 }
+/* Avisos push (Firebase Cloud Messaging): el celular se suscribe al tema "actualizaciones" y
+   GitHub envía el aviso al publicar cada versión, aunque la app esté cerrada. */
+let pushReady = false;
+async function setupPush() {
+  const FM = Native && Native.FirebaseMessaging;
+  if (!FM) return;
+  try {
+    const p = await FM.checkPermissions();
+    if (p.receive !== "granted" && (await FM.requestPermissions()).receive !== "granted") return;
+    if (Native.LocalNotifications) await nativeChannels(Native.LocalNotifications);
+    await FM.subscribeToTopic({ topic: "actualizaciones" });
+    pushReady = true;
+    FM.addListener("notificationActionPerformed", e => {
+      const d = (e && e.notification && e.notification.data) || {};
+      if (d.url) location.href = d.url;
+    }).catch(() => {});
+  } catch {}
+}
 async function notifyUpdate(build, url) {
-  if (!Native || !Native.LocalNotifications || lsGet("habitflow:notifiedBuild") === build) return;
+  // Si los avisos push están activos, ese aviso ya llegó; no se repite con uno local
+  if (pushReady || !Native || !Native.LocalNotifications || lsGet("habitflow:notifiedBuild") === build) return;
   const LN = Native.LocalNotifications;
   try {
     listenNative(LN);
@@ -1547,6 +1566,7 @@ function hideSplash() {
     hideSplash();
   }
   scheduleNative();
+  setupPush();
   checkReminders();
   setInterval(checkReminders, 15000);
   checkUpdate();

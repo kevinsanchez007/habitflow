@@ -24,6 +24,11 @@
 
         </activity>
 
+        <!-- Avisos push (Firebase Cloud Messaging): canal, ícono y color por defecto -->
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="actualizaciones" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/ic_stat_icon" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@color/hf_accent" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

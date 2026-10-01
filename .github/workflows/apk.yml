@@ -46,3 +46,9 @@ jobs:
           body_path: notas.md
           files: habitflow.apk
           make_latest: true
+      - name: Avisar a los celulares (notificación push)
+        continue-on-error: true
+        env:
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+          BUILD: ${{ github.run_number }}
+        run: node scripts/push-actualizacion.js

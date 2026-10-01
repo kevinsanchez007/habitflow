@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "832765603440",
+    "project_id": "habitflow-f169e",
+    "storage_bucket": "habitflow-f169e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:832765603440:android:f7ec9a0afd235c6806ceb5",
+        "android_client_info": {
+          "package_name": "co.edu.cun.habitflow"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDC605NhSwaoA9obSBFS6manKodDeLqbaw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
