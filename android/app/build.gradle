@@ -7,8 +7,9 @@ android {
         applicationId "co.edu.cun.habitflow"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // Cada compilación de GitHub sube el número (GITHUB_RUN_NUMBER) para que el APK nuevo se instale encima del anterior
+        versionCode Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER") ?: "1")
+        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,7 +17,20 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Firma fija: todos los APK salen con la misma llave, así Android los acepta como actualización.
+    // La llave llega desde los secretos de GitHub (HF_KEYSTORE_B64 y HF_KEYSTORE_PASSWORD); nunca se sube al repositorio.
+    signingConfigs {
+        habitflow {
+            storeFile file("habitflow.keystore")
+            storePassword System.getenv("HF_KEYSTORE_PASSWORD")
+            keyAlias "habitflow"
+            keyPassword System.getenv("HF_KEYSTORE_PASSWORD")
+        }
+    }
     buildTypes {
+        debug {
+            if (file("habitflow.keystore").exists()) signingConfig signingConfigs.habitflow
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

@@ -1,10 +1,14 @@
-# Compila el .apk de HabitFlow en GitHub cada vez que se sube un cambio.
-# El archivo queda en la pestaña Actions > la ejecución > Artifacts > habitflow-apk.
+# Compila el .apk de HabitFlow en GitHub cada vez que se sube un cambio a main.
+# - Queda en Actions > la ejecución > Artifacts > habitflow-apk.
+# - También se publica en Releases (v1.0.<número>); la app avisa cuando hay uno nuevo.
+#   Enlace fijo a la última versión: https://github.com/kevinsanchez007/habitflow/releases/latest/download/habitflow.apk
 name: Compilar APK
 on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -15,9 +19,27 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
       - run: npm ci || npm install
+      - name: Número de versión dentro de la app
+        run: echo "{\"build\": ${{ github.run_number }}}" > www/version.json
       - run: npx cap sync android
+      - name: Llave de firma (desde los secretos del repositorio)
+        env:
+          HF_KEYSTORE_B64: ${{ secrets.HF_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$HF_KEYSTORE_B64" ]; then echo "$HF_KEYSTORE_B64" | base64 -d > android/app/habitflow.keystore; else echo "::warning::Sin el secreto HF_KEYSTORE_B64 el APK sale con una firma temporal y habrá que desinstalar para actualizar."; fi
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+        env:
+          HF_KEYSTORE_PASSWORD: ${{ secrets.HF_KEYSTORE_PASSWORD }}
+      - run: cp android/app/build/outputs/apk/debug/app-debug.apk habitflow.apk
       - uses: actions/upload-artifact@v4
         with:
           name: habitflow-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: habitflow.apk
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: HabitFlow 1.0.${{ github.run_number }}
+          body: "APK compilado desde ${{ github.sha }}. Se instala encima de la versión anterior sin perder el progreso."
+          files: habitflow.apk
+          make_latest: true

@@ -680,6 +680,25 @@ function showReminder(h, tag, mins) {
   try { navigator.vibrate && navigator.vibrate([60, 40, 60]); } catch {}
   try { if ("Notification" in window && Notification.permission === "granted" && document.hidden) new Notification("HabitFlow", { body: "Es hora de: " + h.name }); } catch {}
 }
+/* Actualizaciones (solo en la app Android): cada compilación publica un APK en GitHub
+   Releases. Si hay uno más nuevo que el instalado, Hoy muestra un aviso para instalarlo
+   encima (misma firma, así que no hay que desinstalar ni se pierde el progreso). */
+const RELEASES_API = "https://api.github.com/repos/kevinsanchez007/habitflow/releases/latest";
+let APP_BUILD = null, updateInfo = null, updateCheckedAt = 0;
+async function checkUpdate() {
+  if (!window.Capacitor || !navigator.onLine || Date.now() - updateCheckedAt < 3 * 3600e3) return;
+  updateCheckedAt = Date.now();
+  try {
+    if (APP_BUILD == null) APP_BUILD = (await (await fetch("version.json", { cache: "no-store" })).json()).build;
+    const r = await (await fetch(RELEASES_API, { cache: "no-store" })).json();
+    const latest = parseInt(String(r.tag_name || "").split(".").pop(), 10);
+    if (latest > APP_BUILD) {
+      const apk = (r.assets || []).find(a => /\.apk$/.test(a.name));
+      updateInfo = { build: latest, url: apk ? apk.browser_download_url : r.html_url };
+      if (screen === "app" && tab === "hoy") render();
+    }
+  } catch {}
+}
 /* Notificaciones del sistema (solo en la app Android con Capacitor): avisan aunque la app esté cerrada */
 const Native = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() ? window.Capacitor.Plugins : null;
 let nativeTimer = null;
@@ -849,6 +868,9 @@ function syncLine() {
 }
 function refreshSyncBadge() { const n = document.getElementById("syncline"); if (n) n.replaceWith(syncLine()); }
 function topBanner() {
+  if (updateInfo) return el("div", { class: "banner" },
+    el("span", {}, `Hay una versión nueva de HabitFlow (1.0.${updateInfo.build}). Tu progreso se conserva.`),
+    btn("Actualizar", "btn small primary", () => { location.href = updateInfo.url; }));
   if (!Auth.session) return el("div", { class: "banner" },
     el("span", {}, "Modo de prueba con datos de ejemplo. Nada se guarda."),
     btn("Crear cuenta", "btn small primary", () => { screen = "auth"; authMode = "register"; authMsg = ""; render(); }));
@@ -1200,7 +1222,7 @@ function viewPerfil() {
             else showToast("No se pudo eliminar la cuenta. Revisa tu internet.", 4000);
           }
         })) : null),
-    el("p", { class: "muted", style: "font-size:.8rem;margin:0" }, Backend.mode === "firebase" ? "HabitFlow · MVP. Los cambios se guardan primero en el celular y luego se envían a Firebase (Firestore)." : "HabitFlow · prototipo MVP. Los cambios se guardan primero en el celular y luego se envían cifrados a la nube.")
+    el("p", { class: "muted", style: "font-size:.8rem;margin:0" }, Backend.mode === "firebase" ? `HabitFlow${APP_BUILD ? " 1.0." + APP_BUILD : ""} · MVP. Los cambios se guardan primero en el celular y luego se envían a Firebase (Firestore).` : "HabitFlow · prototipo MVP. Los cambios se guardan primero en el celular y luego se envían cifrados a la nube.")
   ];
 }
 
@@ -1256,7 +1278,8 @@ function render() {
   scheduleNative();
   checkReminders();
   setInterval(checkReminders, 15000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); if (screen === "app" && tab === "hoy") render(); } });
+  checkUpdate();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); checkUpdate(); if (screen === "app" && tab === "hoy") render(); } });
 })();
 </script>
 

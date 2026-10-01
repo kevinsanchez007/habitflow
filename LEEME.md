@@ -22,5 +22,10 @@ Cambiar `habitflow-app/app.html` y correr `python3 build.py --android` en esa ca
 - **Sin conexión:** todo se guarda primero en el celular y se envía a Firestore al volver la red. La latencia de envío (RNF-02) y la de inicio de sesión (RNF-08) quedan en Perfil → Mediciones.
 - "Eliminar mi cuenta" borra el documento y el usuario. Si Firebase pide un inicio de sesión reciente, la app borra el progreso, cierra sesión y pide entrar otra vez para terminar.
 
+## Actualizaciones sin desinstalar
+- Cada compilación sube el número de versión (`1.0.<número de ejecución>`) y se publica en *Releases*. Enlace fijo a la última: https://github.com/kevinsanchez007/habitflow/releases/latest/download/habitflow.apk
+- La app revisa al abrirse (máximo cada 3 horas) si hay una versión más nueva y muestra en Hoy el aviso **Actualizar**, que descarga el APK.
+- Para que Android lo instale **encima** (sin desinstalar y sin perder el progreso) todos los APK deben tener la misma firma. La llave vive en los secretos del repositorio (*Settings → Secrets and variables → Actions*): `HF_KEYSTORE_B64` (la llave en base64) y `HF_KEYSTORE_PASSWORD`. Nunca se sube al repositorio. Sin esos secretos el APK sale con una firma temporal.
+
 ## Notificaciones
 Incluidas: se programan por cada hábito con recordatorio y suenan con la app cerrada.
