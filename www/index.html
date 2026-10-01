@@ -204,6 +204,37 @@ textarea{width:100%;min-height:140px;font-family:var(--f-mono);font-size:.78rem;
 .auth > *{animation:rise .4s ease-out both}
 .auth > *:nth-child(2){animation-delay:.05s}.auth > *:nth-child(3){animation-delay:.1s}.auth > *:nth-child(4){animation-delay:.15s}
 /* Entrada de la app: continúa la pantalla de carga de Android (mismo verde y mismo logo) */
+/* Bienvenida al abrir la app */
+.welcome{min-height:calc(100svh - 120px);display:flex;flex-direction:column;justify-content:center;gap:16px;padding-top:12px}
+.welcome > *{animation:rise .45s ease-out both}
+.welcome > *:nth-child(2){animation-delay:.06s}.welcome > *:nth-child(3){animation-delay:.12s}.welcome > *:nth-child(4){animation-delay:.18s}.welcome > *:nth-child(5){animation-delay:.24s}.welcome > *:nth-child(6){animation-delay:.3s}
+.welcome .wlogo{width:64px;height:64px}
+.welcome .wlogo svg{width:100%;height:100%}
+.welcome h1{font-size:1.8rem;margin:0;line-height:1.15}
+.welcome .wsum{font-size:1.05rem;color:var(--muted);margin:0}
+.wstats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.wstat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.wstat b{font-family:var(--f-display);font-size:1.5rem}
+.wstat span{color:var(--muted);font-size:.85rem}
+.news{background:var(--accent-soft);border-radius:var(--r);padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.news ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.welcome .btn.block{margin-top:6px;padding-block:14px;font-size:1.02rem}
+@keyframes wout{to{opacity:0;transform:translateY(-14px) scale(.97)}}
+.app.leaving{animation:wout .26s ease-in forwards}
+@keyframes arrive{from{opacity:0;transform:scale(1.03)}to{opacity:1;transform:none}}
+.app.arrive{animation:arrive .38s cubic-bezier(.2,.7,.2,1)}
+@keyframes navin{from{transform:translateY(100%)}to{transform:none}}
+.tabs.arrive{animation:navin .38s cubic-bezier(.2,.8,.2,1)}
+/* Rutinas listas desplegables */
+details.tpl{padding:0;gap:0}
+details.tpl summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px}
+details.tpl summary::-webkit-details-marker{display:none}
+details.tpl summary .tn{display:flex;flex-direction:column;gap:2px}
+details.tpl summary .tn span{color:var(--muted);font-size:.82rem}
+details.tpl summary .chev{width:20px;height:20px;flex:none;color:var(--muted);transition:transform .25s ease}
+details.tpl[open] summary .chev{transform:rotate(180deg)}
+details.tpl .tbody{padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
+details.tpl[open] .tbody{animation:rise .25s ease-out}
 #splash{position:fixed;inset:0;z-index:60;background:#2E6A4D;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .4s ease,visibility .4s}
 #splash.gone{opacity:0;visibility:hidden;pointer-events:none}
 #splash .mark{width:96px;height:96px}
@@ -722,9 +753,16 @@ function showReminder(h, tag, mins) {
    Releases. Si hay uno más nuevo que el instalado, Hoy muestra un aviso para instalarlo
    encima (misma firma, así que no hay que desinstalar ni se pierde el progreso). */
 const RELEASES_API = "https://api.github.com/repos/kevinsanchez007/habitflow/releases/latest";
-let APP_BUILD = null, updateInfo = null, updateCheckedAt = 0;
+let APP_BUILD = null, NEWS = null, updateInfo = null, updateCheckedAt = 0;
+const SEEN_KEY = "habitflow:seenBuild";
+// Versión instalada y novedades que trae (archivos dentro del APK)
+async function loadVersion() {
+  try { APP_BUILD = (await (await fetch("version.json", { cache: "no-store" })).json()).build || null; } catch {}
+  try { NEWS = await (await fetch("novedades.json", { cache: "no-store" })).json(); } catch {}
+}
+function pendingNews() { return APP_BUILD && NEWS && NEWS.items && NEWS.items.length && lsGet(SEEN_KEY) !== APP_BUILD ? NEWS : null; }
 async function checkUpdate() {
-  if (!window.Capacitor || !navigator.onLine || Date.now() - updateCheckedAt < 3 * 3600e3) return;
+  if (!window.Capacitor || !navigator.onLine || Date.now() - updateCheckedAt < 3600e3) return;
   updateCheckedAt = Date.now();
   try {
     if (APP_BUILD == null) APP_BUILD = (await (await fetch("version.json", { cache: "no-store" })).json()).build;
@@ -733,6 +771,7 @@ async function checkUpdate() {
     if (latest > APP_BUILD) {
       const apk = (r.assets || []).find(a => /\.apk$/.test(a.name));
       updateInfo = { build: latest, url: apk ? apk.browser_download_url : r.html_url };
+      notifyUpdate(latest, updateInfo.url);
       if (screen === "app" && tab === "hoy") render();
     }
   } catch {}
@@ -740,25 +779,81 @@ async function checkUpdate() {
 /* Notificaciones del sistema (solo en la app Android con Capacitor): avisan aunque la app esté cerrada */
 const Native = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() ? window.Capacitor.Plugins : null;
 let nativeTimer = null;
+/* Canales de Android: "recordatorios" tiene importancia máxima (aparece arriba en la pantalla,
+   como WhatsApp), sonido propio (res/raw/recordatorio.wav) y vibración. */
+const CH_REMIND = "recordatorios", CH_UPDATE = "actualizaciones", UPDATE_NOTIF_ID = 9000;
+let channelsReady = null;
+function nativeChannels(LN) {
+  return channelsReady || (channelsReady = Promise.all([
+    LN.createChannel({ id: CH_REMIND, name: "Recordatorios de hábitos", description: "Aviso a la hora de cada hábito", importance: 5, visibility: 1, sound: "recordatorio.wav", vibration: true, lights: true, lightColor: "#2E6A4D" }),
+    LN.createChannel({ id: CH_UPDATE, name: "Actualizaciones", description: "Aviso cuando hay una versión nueva de HabitFlow", importance: 4, visibility: 1, vibration: true })
+  ]).catch(() => {}));
+}
+// Las alarmas exactas hacen que el aviso llegue en el minuto programado y no varios minutos después
+async function ensureExactAlarms(LN) {
+  try {
+    const st = await LN.checkExactNotificationSetting();
+    if (st.exact_alarm === "granted" || lsGet("habitflow:askedExact")) return;
+    lsSet("habitflow:askedExact", true);
+    showToast("Para que los recordatorios lleguen a la hora exacta, activa “Alarmas y recordatorios” para HabitFlow.", 6000);
+    setTimeout(() => LN.changeExactNotificationSetting().catch(() => {}), 1800);
+  } catch {}
+}
+let nativeListening = false;
+function listenNative(LN) {
+  if (nativeListening) return; nativeListening = true;
+  LN.addListener("localNotificationActionPerformed", a => {
+    const x = (a && a.notification && a.notification.extra) || {};
+    if (x.url) { location.href = x.url; return; }
+    if (x.habit && Auth.session) { if (screen === "welcome") enterApp(); else { tab = "hoy"; dayOffset = 0; if (screen === "app") render(); } }
+  }).catch(() => {});
+}
 function scheduleNative() {
   if (!Native || !Native.LocalNotifications) return;
   clearTimeout(nativeTimer);
   nativeTimer = setTimeout(async () => {
     const LN = Native.LocalNotifications;
     try {
+      listenNative(LN);
       const perm = await LN.checkPermissions();
       if (perm.display !== "granted" && (await LN.requestPermissions()).display !== "granted") return;
+      await nativeChannels(LN);
       const pending = await LN.getPending();
-      if (pending.notifications.length) await LN.cancel({ notifications: pending.notifications.map(n => ({ id: n.id })) });
-      if (!Auth.session) return;
+      const old = pending.notifications.filter(n => n.id !== UPDATE_NOTIF_ID);
+      if (old.length) await LN.cancel({ notifications: old.map(n => ({ id: n.id })) });
+      if (!Auth.session || testMode) return;
       const list = [];
       activeHabits().filter(h => h.remind && h.time).forEach((h, i) => {
         const [hour, minute] = h.time.split(":").map(Number);
-        for (const d of h.days) list.push({ id: (i + 1) * 10 + d, title: "HabitFlow", body: "Es hora de: " + h.name, schedule: { on: { weekday: d + 1, hour, minute }, allowWhileIdle: true } });
+        for (const d of h.days) list.push({
+          id: (i + 1) * 10 + d, channelId: CH_REMIND,
+          title: "Es hora de: " + h.name,
+          body: "Toca para abrir HabitFlow y marcarlo como hecho.",
+          smallIcon: "ic_stat_icon", iconColor: "#2E6A4D", sound: "recordatorio.wav",
+          extra: { habit: h.id },
+          // second: 0 → suena al inicio del minuto (sin esto Android toma los segundos del momento en que se programó)
+          schedule: { on: { weekday: d + 1, hour, minute, second: 0 }, allowWhileIdle: true }
+        });
       });
-      if (list.length) await LN.schedule({ notifications: list });
+      if (list.length) { await LN.schedule({ notifications: list }); ensureExactAlarms(LN); }
     } catch {}
   }, 800);
+}
+async function notifyUpdate(build, url) {
+  if (!Native || !Native.LocalNotifications || lsGet("habitflow:notifiedBuild") === build) return;
+  const LN = Native.LocalNotifications;
+  try {
+    listenNative(LN);
+    if ((await LN.checkPermissions()).display !== "granted") return;
+    await nativeChannels(LN);
+    await LN.schedule({ notifications: [{
+      id: UPDATE_NOTIF_ID, channelId: CH_UPDATE, smallIcon: "ic_stat_icon", iconColor: "#2E6A4D",
+      title: "Hay una actualización de HabitFlow",
+      body: `La versión 1.0.${build} está lista. Toca para descargarla; tu progreso se conserva.`,
+      extra: { url }, schedule: { at: new Date(Date.now() + 1500), allowWhileIdle: true }
+    }] });
+    lsSet("habitflow:notifiedBuild", build);
+  } catch {}
 }
 let toastTimer;
 function showToast(msg, ms) {
@@ -1130,10 +1225,19 @@ function viewLogros() {
 }
 
 const TEMPLATES = [
-  { name: "Mañana productiva", by: "Rutina sugerida para empezar el día", habits: [["Tomar un vaso de agua al despertar", "Salud", "06:30"], ["Estirar 10 minutos", "Ejercicio", "06:45"], ["Planear el día", "Mente", "07:00"]] },
-  { name: "Mente en calma", by: "Rutina sugerida para bajar el estrés", habits: [["Meditar 10 minutos", "Mente", "07:30"], ["Escribir 3 cosas buenas del día", "Mente", "21:30"]] },
-  { name: "Estudio constante", by: "Rutina sugerida para estudiantes", habits: [["Repasar apuntes 25 minutos", "Estudio", "19:00"], ["Leer 20 minutos", "Mente", "21:00"], ["Dormir antes de las 11", "Salud", "22:30"]] }
+  { name: "Mañana productiva", by: "Para empezar el día con energía", habits: [["Tomar un vaso de agua al despertar", "Salud", "06:30"], ["Estirar 10 minutos", "Ejercicio", "06:45"], ["Planear el día", "Mente", "07:00"]] },
+  { name: "Mente en calma", by: "Para bajar el estrés", habits: [["Meditar 10 minutos", "Mente", "07:30"], ["Escribir 3 cosas buenas del día", "Mente", "21:30"]] },
+  { name: "Estudio constante", by: "Para estudiantes", habits: [["Repasar apuntes 25 minutos", "Estudio", "19:00"], ["Leer 20 minutos", "Mente", "21:00"], ["Dormir antes de las 11", "Salud", "22:30"]] },
+  { name: "Cuerpo activo", by: "Para moverte todos los días", habits: [["Hacer 20 sentadillas", "Ejercicio", "07:00"], ["Caminar 30 minutos", "Ejercicio", "18:00"], ["Estirar antes de dormir", "Ejercicio", "21:45"]] },
+  { name: "Comer mejor", by: "Para cuidar tu alimentación", habits: [["Desayunar antes de las 8", "Salud", "07:15"], ["Comer una fruta", "Salud", "10:30"], ["Tomar 8 vasos de agua", "Salud", "15:00"]] },
+  { name: "Buen descanso", by: "Para dormir mejor", habits: [["Dejar el celular a las 10", "Salud", "21:50"], ["Leer 15 minutos en papel", "Mente", "22:00"], ["Acostarse a la misma hora", "Salud", "22:30"]] },
+  { name: "Casa en orden", by: "Para mantener tu espacio limpio", habits: [["Tender la cama", "Hogar", "06:50"], ["Lavar los platos después de almorzar", "Hogar", "13:30"], ["Ordenar 10 minutos", "Hogar", "20:00"]] },
+  { name: "Aprender inglés", by: "Para practicar un idioma un poco cada día", habits: [["Practicar 15 minutos en una app", "Estudio", "08:00"], ["Escuchar un podcast en inglés", "Estudio", "18:30"]] },
+  { name: "Finanzas personales", by: "Para controlar tus gastos", habits: [["Anotar los gastos del día", "Otro", "21:00"], ["Guardar algo de dinero", "Otro", "12:00"]] },
+  { name: "Bienestar digital", by: "Para usar menos el celular", habits: [["Revisar redes solo después de almorzar", "Mente", "13:00"], ["Pausa sin pantallas de 20 minutos", "Mente", "16:00"]] }
 ];
+const CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+let openTpl = null;
 function addTemplate(t) {
   const prev = { streak: currentStreak(), level: level().n };
   let added = 0;
@@ -1209,10 +1313,12 @@ function viewHabitos() {
     act.length ? el("section", { class: "stack" }, act.map(h => row(h, false))) : el("div", { class: "empty" }, "Crea un hábito o agrega una rutina de abajo."),
     arch.length ? el("section", { class: "stack" }, el("h2", {}, "Archivados"), arch.map(h => row(h, true))) : null,
     el("section", { class: "stack" }, el("h2", {}, "Rutinas listas"),
-      TEMPLATES.map(t => el("div", { class: "tpl" },
-        el("div", { class: "row between wrap" }, el("strong", {}, t.name), btn("Agregar rutina", "btn small", () => addTemplate(t), { disabled: full })),
-        el("span", { class: "muted", style: "font-size:.85rem" }, t.by),
-        el("ul", {}, t.habits.map(x => el("li", {}, `${x[0]} (${x[2]})`))))))
+      el("span", { class: "muted", style: "font-size:.85rem" }, "Toca una rutina para ver sus hábitos."),
+      TEMPLATES.map(t => el("details", { class: "tpl", open: openTpl === t.name, ontoggle: (e) => { if (e.target.open) openTpl = t.name; else if (openTpl === t.name) openTpl = null; } },
+        el("summary", {}, el("div", { class: "tn" }, el("strong", {}, t.name), el("span", {}, `${t.habits.length} hábitos · ${t.by}`)), el("span", { class: "chev", html: CHEV })),
+        el("div", { class: "tbody" },
+          el("ul", {}, t.habits.map(x => el("li", {}, `${x[0]} · ${x[2]}`))),
+          el("div", {}, btn("Agregar rutina", "btn small primary", () => addTemplate(t), { disabled: full }))))))
   ];
 }
 
@@ -1250,6 +1356,45 @@ function metricRow(type) {
   if (s.n) pill = s.p95 <= g.goal ? el("span", { class: "pill ok" }, "Cumple") : el("span", { class: "pill bad" }, "No cumple");
   return el("tr", {}, el("td", {}, g.rnf), el("td", {}, g.label), el("td", { class: "n" }, s.n), el("td", { class: "n" }, fmt(s.avg)), el("td", { class: "n" }, fmt(s.p95)),
     el("td", { class: "n" }, `≤ ${g.goal.toLocaleString("es-CO")} ${g.unit}`), el("td", {}, pill));
+}
+
+/* Pantalla de bienvenida: aparece cada vez que se abre la app con la sesión iniciada */
+function viewWelcome() {
+  const first = (S.profile.name || "").split(" ")[0];
+  const st = dayStatus(todayKey()), streak = currentStreak(), h = new Date().getHours();
+  const saludo = h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches";
+  const left = st.total - st.done;
+  const sum = !st.total ? "Hoy no tienes hábitos programados." : left === 0 ? "Ya cumpliste todos tus hábitos de hoy. ¡Bien hecho!" : `Hoy te ${left === 1 ? "falta 1 hábito" : `faltan ${left} hábitos`} por cumplir.`;
+  const news = pendingNews();
+  return [el("section", { class: "welcome" },
+    el("div", { class: "wlogo", html: LOGO }),
+    el("h1", {}, first ? `${saludo}, ${first}` : saludo),
+    el("p", { class: "wsum" }, sum),
+    el("div", { class: "wstats" },
+      el("div", { class: "wstat" }, el("b", { class: "num" }, String(streak)), el("span", {}, streak === 1 ? "día de racha" : "días de racha")),
+      el("div", { class: "wstat" }, el("b", { class: "num" }, `${st.done}/${st.total}`), el("span", {}, "hábitos de hoy"))),
+    news ? el("div", { class: "news" }, el("strong", {}, news.titulo || `Novedades de la versión 1.0.${APP_BUILD}`), el("ul", {}, news.items.map(x => el("li", {}, x)))) : null,
+    btn("Continuar", "btn primary block", enterApp))];
+}
+function enterApp() {
+  if (screen !== "welcome") return;
+  if (APP_BUILD) lsSet(SEEN_KEY, APP_BUILD);
+  const app = document.getElementById("app"), nav = document.getElementById("nav");
+  const go = () => {
+    app.classList.remove("leaving");
+    screen = "app"; tab = "hoy"; dayOffset = 0;
+    renderedView = null; // sin la transición lateral: esta entrada tiene la suya
+    render(); window.scrollTo(0, 0);
+    if (!REDUCED) {
+      app.classList.remove("enter", "arrive"); nav.classList.remove("arrive"); void app.offsetWidth;
+      app.classList.add("arrive"); nav.classList.add("arrive");
+      setTimeout(() => { app.classList.remove("arrive"); nav.classList.remove("arrive"); }, 450);
+    }
+    checkReminders();
+  };
+  if (REDUCED) return go();
+  app.classList.add("leaving");
+  setTimeout(go, 240);
 }
 
 const DEV_KEY = "habitflow:dev";
@@ -1340,7 +1485,7 @@ const TAB_INDEX = Object.fromEntries(TABS.map(([id], i) => [id, i]));
 function render() {
   const app = document.getElementById("app");
   const view = screen === "app" ? tab : screen;
-  app.replaceChildren(...(screen === "app" ? VIEWS[tab]() : screen === "auth" ? viewAuth() : []).filter(Boolean));
+  app.replaceChildren(...(screen === "app" ? VIEWS[tab]() : screen === "auth" ? viewAuth() : screen === "welcome" ? viewWelcome() : []).filter(Boolean));
   document.getElementById("nav").hidden = screen !== "app";
   if (screen === "app") renderTabs();
   // Transición suave al cambiar de página
@@ -1367,10 +1512,11 @@ function hideSplash() {
 }
 (async function boot() {
   Backend.init();
+  await Promise.race([loadVersion(), new Promise(r => setTimeout(r, 400))]);
   if (await Auth.restore()) {
     const cached = lsGet(cacheKey(Auth.session.id));
     S = normalize(cached || emptyState());
-    screen = "app";
+    screen = "welcome";
     render();
     hideSplash();
     afterPaint(() => { recordMetric("load", performance.now()); saveLocal(); });

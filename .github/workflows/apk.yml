@@ -32,6 +32,8 @@ jobs:
         env:
           HF_KEYSTORE_PASSWORD: ${{ secrets.HF_KEYSTORE_PASSWORD }}
       - run: cp android/app/build/outputs/apk/debug/app-debug.apk habitflow.apk
+      - name: Notas de la versión (desde www/novedades.json)
+        run: node -e "const n=require('./www/novedades.json');require('fs').writeFileSync('notas.md',(n.items||[]).map(x=>'- '+x).join('\n')+'\n\nSe instala encima de la versión anterior sin perder el progreso.\n')"
       - uses: actions/upload-artifact@v4
         with:
           name: habitflow-apk
@@ -41,6 +43,6 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: HabitFlow 1.0.${{ github.run_number }}
-          body: "APK compilado desde ${{ github.sha }}. Se instala encima de la versión anterior sin perder el progreso."
+          body_path: notas.md
           files: habitflow.apk
           make_latest: true
