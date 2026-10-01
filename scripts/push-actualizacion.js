@@ -4,7 +4,13 @@
 const crypto = require("crypto");
 const raw = process.env.FCM_SERVICE_ACCOUNT;
 if (!raw) { console.log("Sin FCM_SERVICE_ACCOUNT: no se envía el aviso push."); process.exit(0); }
-const sa = JSON.parse(raw);
+let sa;
+try { sa = JSON.parse(raw); } catch { console.error("FCM_SERVICE_ACCOUNT no es un JSON válido."); process.exit(1); }
+if (!sa.private_key || !sa.client_email || !sa.project_id) {
+  // Solo se muestran los nombres de los campos, nunca sus valores
+  console.error("FCM_SERVICE_ACCOUNT no es la llave de una cuenta de servicio (falta private_key, client_email o project_id). Campos encontrados: " + Object.keys(sa).join(", "));
+  process.exit(1);
+}
 const build = process.env.BUILD;
 const b64 = o => Buffer.from(JSON.stringify(o)).toString("base64url");
 const now = Math.floor(Date.now() / 1000);

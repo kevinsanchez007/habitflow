@@ -235,6 +235,12 @@ details.tpl summary .chev{width:20px;height:20px;flex:none;color:var(--muted);tr
 details.tpl[open] summary .chev{transform:rotate(180deg)}
 details.tpl .tbody{padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
 details.tpl[open] .tbody{animation:rise .25s ease-out}
+.picks{display:flex;flex-direction:column;gap:6px}
+.pick{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;cursor:pointer;transition:background-color .2s ease,border-color .2s ease}
+.pick:has(input:checked){background:var(--accent-soft);border-color:var(--accent)}
+.pick input{width:20px;height:20px;accent-color:var(--accent);margin:0}
+.pick .pt{color:var(--muted);font-size:.85rem}
+.pick.owned{opacity:.6;cursor:default}
 #splash{position:fixed;inset:0;z-index:60;background:#2E6A4D;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .4s ease,visibility .4s}
 #splash.gone{opacity:0;visibility:hidden;pointer-events:none}
 #splash .mark{width:96px;height:96px}
@@ -1054,7 +1060,7 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 function btn(label, cls, onclick, attrs) { return el("button", Object.assign({ type: "button", class: cls, onclick }, attrs || {}), label); }
-function goTab(id) { tab = id; editing = null; render(); window.scrollTo(0, 0); }
+function goTab(id) { if (id !== "perfil") devMode = false; tab = id; editing = null; render(); window.scrollTo(0, 0); }
 
 function renderTabs() {
   const box = document.getElementById("tabs"); box.innerHTML = "";
@@ -1255,20 +1261,52 @@ const TEMPLATES = [
   { name: "Finanzas personales", by: "Para controlar tus gastos", habits: [["Anotar los gastos del día", "Otro", "21:00"], ["Guardar algo de dinero", "Otro", "12:00"]] },
   { name: "Bienestar digital", by: "Para usar menos el celular", habits: [["Revisar redes solo después de almorzar", "Mente", "13:00"], ["Pausa sin pantallas de 20 minutos", "Mente", "16:00"]] }
 ];
+/* Cuerpo de una rutina: casillas para elegir qué hábitos agregar */
+function tplBody(t) {
+  const sel = tplSel[t.name] || (tplSel[t.name] = new Set());
+  const have = new Set(activeHabits().map(h => h.name.trim().toLowerCase()));
+  const free = () => MAX_ACTIVOS - activeHabits().length;
+  const add = btn("", "btn small primary", () => addTemplate(t, sel));
+  const sync = () => {
+    const n = sel.size;
+    add.disabled = n === 0;
+    add.textContent = n === 0 ? "Elige al menos un hábito" : n === 1 ? "Agregar 1 hábito" : `Agregar ${n} hábitos`;
+  };
+  const items = t.habits.map(([name, , time], i) => {
+    const owned = have.has(name.trim().toLowerCase());
+    const box = el("input", { type: "checkbox", checked: sel.has(i) && !owned, disabled: owned, onchange: (e) => {
+      if (e.target.checked) {
+        if (sel.size >= free()) { e.target.checked = false; showToast(free() <= 0 ? `Ya tienes ${MAX_ACTIVOS} hábitos activos. Archiva uno primero.` : `Solo puedes agregar ${free()} más (máximo ${MAX_ACTIVOS} activos).`, 3200); return; }
+        sel.add(i);
+      } else sel.delete(i);
+      sync();
+    } });
+    return el("label", { class: "pick" + (owned ? " owned" : "") }, box,
+      el("span", { class: "pn" }, name), el("span", { class: "pt" }, owned ? "Ya lo tienes" : time));
+  });
+  sync();
+  return el("div", { class: "tbody" },
+    el("span", { class: "muted", style: "font-size:.85rem" }, "Marca los hábitos que quieres agregar."),
+    el("div", { class: "picks" }, items),
+    el("div", {}, add));
+}
 const CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
 let openTpl = null, openHabit = null;
-function addTemplate(t) {
+const tplSel = {}; // rutina → hábitos marcados para agregar
+// Agrega solo los hábitos que la persona marcó de la rutina (índices en t.habits)
+function addTemplate(t, picked) {
   const prev = { streak: currentStreak(), level: level().n };
+  const chosen = t.habits.filter((_, i) => picked.has(i));
   let added = 0;
-  for (const [name, cat, time] of t.habits) {
+  for (const [name, cat, time] of chosen) {
     if (activeHabits().length >= MAX_ACTIVOS) break;
     S.habits.push({ id: uid(), name, cat, days: [0,1,2,3,4,5,6], time, remind: true, createdAt: todayKey(), archivedAt: null });
     added++;
   }
   S.usedTemplate = true;
-  openTpl = null;
+  openTpl = null; delete tplSel[t.name];
   commit();
-  showToast(added < t.habits.length ? `Se agregaron ${added} de ${t.habits.length}. El máximo es ${MAX_ACTIVOS} hábitos activos.` : `Rutina "${t.name}" agregada`);
+  showToast(added < chosen.length ? `Se agregaron ${added} de ${chosen.length}. El máximo es ${MAX_ACTIVOS} hábitos activos.` : added === 1 ? "Hábito agregado" : `${added} hábitos agregados`);
   render();
   flushCelebrations(prev);
 }
@@ -1343,9 +1381,7 @@ function viewHabitos() {
       el("span", { class: "muted", style: "font-size:.85rem" }, "Toca una rutina para ver sus hábitos."),
       TEMPLATES.map(t => el("details", { class: "tpl", open: openTpl === t.name, ontoggle: (e) => { if (e.target.open) openTpl = t.name; else if (openTpl === t.name) openTpl = null; } },
         el("summary", {}, el("div", { class: "tn" }, el("strong", {}, t.name), el("span", {}, `${t.habits.length} hábitos · ${t.by}`)), el("span", { class: "chev", html: CHEV })),
-        el("div", { class: "tbody" },
-          el("ul", {}, t.habits.map(x => el("li", {}, `${x[0]} · ${x[2]}`))),
-          el("div", {}, btn("Agregar rutina", "btn small primary", () => addTemplate(t), { disabled: full }))))))
+        tplBody(t))))
   ];
 }
 
@@ -1424,9 +1460,9 @@ function enterApp() {
   setTimeout(go, 240);
 }
 
-const DEV_KEY = "habitflow:dev";
-let devMode = lsGet(DEV_KEY) === true, verTaps = 0, verTapAt = 0;
-function setDevMode(v) { devMode = !!v; lsSet(DEV_KEY, devMode); }
+// El panel técnico arranca oculto cada vez y se cierra al salir de Perfil; solo se abre con 5 toques en la versión
+let devMode = false, verTaps = 0, verTapAt = 0;
+function setDevMode(v) { devMode = !!v; }
 function viewPerfil() {
   const byNet = {};
   for (const m of S.metrics.sync || []) (byNet[m.net] || (byNet[m.net] = [])).push(m.v);
