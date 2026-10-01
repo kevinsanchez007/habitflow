@@ -1237,7 +1237,7 @@ const TEMPLATES = [
   { name: "Bienestar digital", by: "Para usar menos el celular", habits: [["Revisar redes solo después de almorzar", "Mente", "13:00"], ["Pausa sin pantallas de 20 minutos", "Mente", "16:00"]] }
 ];
 const CHEV = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
-let openTpl = null;
+let openTpl = null, openHabit = null;
 function addTemplate(t) {
   const prev = { streak: currentStreak(), level: level().n };
   let added = 0;
@@ -1247,6 +1247,7 @@ function addTemplate(t) {
     added++;
   }
   S.usedTemplate = true;
+  openTpl = null;
   commit();
   showToast(added < t.habits.length ? `Se agregaron ${added} de ${t.habits.length}. El máximo es ${MAX_ACTIVOS} hábitos activos.` : `Rutina "${t.name}" agregada`);
   render();
@@ -1298,14 +1299,21 @@ function viewHabitos() {
     for (const k of Object.keys(S.log)) { delete S.log[k][h.id]; if (!Object.keys(S.log[k]).length) delete S.log[k]; }
     commit(); freshBadges = []; showToast("Hábito eliminado"); render();
   };
-  const row = (h, archived) => el("div", { class: "habit" },
-    el("div", { class: "info" }, el("div", { class: "name" }, h.name),
-      el("div", { class: "meta" }, `${h.cat} · ${[1,2,3,4,5,6,0].filter(d => h.days.includes(d)).map(d => DOW[d]).join(" ")}${h.time ? " · " + h.time : ""}${h.remind ? " · con recordatorio" : ""}`)),
-    el("div", { class: "row", style: "gap:6px;flex-wrap:wrap;justify-content:flex-end" },
+  // Cada hábito muestra solo su nombre; al tocarlo se despliegan los detalles y las acciones
+  const days = h => h.days.length === 7 ? "Todos los días" : [1,2,3,4,5,6,0].filter(d => h.days.includes(d)).map(d => DOW_LARGO[d]).join(", ");
+  const row = (h, archived) => el("details", { class: "tpl", open: openHabit === h.id, ontoggle: (e) => { if (e.target.open) openHabit = h.id; else if (openHabit === h.id) openHabit = null; } },
+    el("summary", {}, el("div", { class: "tn" }, el("strong", {}, h.name)), el("span", { class: "chev", html: CHEV })),
+    el("div", { class: "tbody" },
+      el("dl", { class: "kv" },
+        el("dt", {}, "Categoría"), el("dd", {}, h.cat),
+        el("dt", {}, "Días"), el("dd", {}, days(h)),
+        el("dt", {}, "Hora"), el("dd", {}, h.time || "Sin hora"),
+        el("dt", {}, "Recordatorio"), el("dd", {}, h.remind && h.time ? "Sí" : "No")),
+    el("div", { class: "row wrap", style: "gap:6px" },
       archived
         ? [btn("Reactivar", "btn small", () => { if (activeHabits().length >= MAX_ACTIVOS) { showToast(`Ya tienes ${MAX_ACTIVOS} hábitos activos. Archiva uno primero.`); return; } h.archivedAt = null; commit(); render(); }),
            btn(confirmHabit === h.id ? "Toca otra vez para borrar" : "Eliminar", "btn small danger", () => removeHabit(h))]
-        : [btn("Editar", "btn small", () => { editing = h.id; render(); }), btn("Archivar", "btn small ghost", () => { h.archivedAt = todayKey(); commit(); render(); })]));
+        : [btn("Editar", "btn small", () => { editing = h.id; render(); }), btn("Archivar", "btn small ghost", () => { h.archivedAt = todayKey(); commit(); render(); })])));
   return [
     topBanner(),
     el("div", { class: "row between" }, el("h1", {}, "Hábitos"), btn("+ Nuevo", "btn primary", () => { editing = "new"; render(); }, { disabled: full })),

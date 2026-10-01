@@ -1,9 +1,7 @@
 {
   "titulo": "Novedades de esta versión",
   "items": [
-    "Los recordatorios llegan a la hora exacta, con sonido propio y aparecen arriba en la pantalla.",
-    "Nueva pantalla de bienvenida con tu resumen del día.",
-    "Las rutinas listas ahora se despliegan y hay 7 rutinas nuevas.",
-    "Te avisamos con una notificación cuando hay una actualización."
+    "En Hábitos, cada hábito muestra solo su nombre. Tócalo para ver sus días, hora y recordatorio.",
+    "Las rutinas se cierran solas después de agregarlas."
   ]
 }
