@@ -201,9 +201,30 @@ textarea{width:100%;min-height:140px;font-family:var(--f-mono);font-size:.78rem;
 .toast{animation:rise .22s ease-out}
 .auth > *{animation:rise .4s ease-out both}
 .auth > *:nth-child(2){animation-delay:.05s}.auth > *:nth-child(3){animation-delay:.1s}.auth > *:nth-child(4){animation-delay:.15s}
+/* Entrada de la app: continúa la pantalla de carga de Android (mismo verde y mismo logo) */
+#splash{position:fixed;inset:0;z-index:60;background:#2E6A4D;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .4s ease,visibility .4s}
+#splash.gone{opacity:0;visibility:hidden;pointer-events:none}
+#splash .mark{width:96px;height:96px}
+#splash .mark svg{width:100%;height:100%;overflow:visible}
+#splash .arc{stroke-dasharray:236;stroke-dashoffset:236;animation:sparc .7s .1s cubic-bezier(.4,0,.2,1) forwards}
+#splash .tick{stroke-dasharray:200;stroke-dashoffset:200;animation:sptick .4s .55s ease-out forwards}
+#splash .ring{transform-origin:256px 256px;animation:spring .9s cubic-bezier(.2,.9,.3,1.2) both}
+#splash .name{font-family:var(--f-display);font-weight:700;color:#fff;font-size:1.7rem;letter-spacing:.01em;animation:rise .45s .6s ease-out both}
+#splash .sub{color:#D6E7DC;font-size:.95rem;animation:rise .45s .75s ease-out both}
+@keyframes sparc{to{stroke-dashoffset:0}}
+@keyframes sptick{to{stroke-dashoffset:0}}
+@keyframes spring{0%{transform:scale(.85)}60%{transform:scale(1.06)}100%{transform:scale(1)}}
+.devpanel{border:1px dashed var(--line);border-radius:var(--r);padding:12px}
+.ver{background:none;border:0;padding:4px 0;color:var(--muted);font:inherit;font-size:.8rem;text-align:left;cursor:default}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.switch input{width:46px;height:26px;appearance:none;-webkit-appearance:none;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;position:relative;cursor:pointer;transition:background-color .2s ease;flex:none;margin:0}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s ease}
+.switch input:checked{background:var(--accent);border-color:var(--accent)}
+.switch input:checked::after{transform:translateX(20px)}
 @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}}
 </style>
 
+<div id="splash" aria-hidden="true"><div class="mark"><svg viewBox="0 0 512 512"><g class="ring"><circle cx="256" cy="256" r="150" fill="none" stroke="#D6E7DC" stroke-width="44"/><path class="arc" d="M256 106a150 150 0 0 1 150 150" fill="none" stroke="#D99A1E" stroke-width="44" stroke-linecap="round"/><path class="tick" d="M190 262l46 46 90-100" fill="none" stroke="#fff" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></g></svg></div><div class="name">HabitFlow</div><div class="sub">Tus hábitos, tu racha, tu progreso.</div></div>
 <main class="app" id="app" aria-live="polite"></main>
 <div class="toast" id="toast" hidden></div>
 <div id="fx" aria-live="polite"></div>
@@ -593,7 +614,7 @@ const Sync = {
     if (!navigator.onLine) return { dot: "warn", text: "Sin conexión. Los cambios se guardan aquí y se envían al volver la red." };
     if (this.failed) return { dot: "bad", text: "No se pudo sincronizar. Se reintentará sola." };
     if (this.pending || this.busy) return { dot: "warn", text: "Sincronizando…" };
-    if (this.lastAt) return { dot: "ok", text: `Sincronizado a las ${this.lastAt} (${Math.round(this.lastMs)} ms)` };
+    if (this.lastAt) return { dot: "ok", text: `Sincronizado a las ${this.lastAt}` + (devMode ? ` (${Math.round(this.lastMs)} ms)` : "") };
     return { dot: "ok", text: "Conectado a la nube" };
   },
   schedule() {
@@ -769,7 +790,8 @@ function nextFx() {
   };
   card.addEventListener("click", close);
   document.getElementById("fx").append(card);
-  try { navigator.vibrate && navigator.vibrate([18, 40, 18]); } catch {}
+  if (it.kind === "streak") Sound.streak(); else if (it.kind === "badge") Sound.badge(); else Sound.level();
+  try { navigator.vibrate && navigator.vibrate(it.kind === "streak" ? [30, 60, 30, 60, 60] : [18, 40, 18]); } catch {}
   setTimeout(() => burst(medal, 14), REDUCED ? 0 : 320);
   setTimeout(close, 2800);
 }
@@ -783,6 +805,48 @@ function flushCelebrations(prev) {
   if (prev && level().n > prev.level) celebrate({ kind: "level", value: level().n, title: `¡Subiste al nivel ${level().n}!`, sub: `Llevas ${xp()} XP en total.` });
 }
 
+/* Sonidos sencillos generados en el momento (sin archivos de audio). Se pueden apagar en Perfil. */
+const SOUND_KEY = "habitflow:sound";
+const Sound = {
+  ctx: null,
+  get on() { return lsGet(SOUND_KEY) !== false; },
+  set on(v) { lsSet(SOUND_KEY, !!v); },
+  ac() {
+    if (!this.ctx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; this.ctx = new C(); }
+    if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
+    return this.ctx;
+  },
+  // notas: [frecuencia Hz, inicio s, duración s]
+  play(notes, type, vol) {
+    if (!this.on) return;
+    try {
+      const c = this.ac(); if (!c) return;
+      const t0 = c.currentTime + 0.01;
+      for (const [f, at, dur] of notes) {
+        const o = c.createOscillator(), g = c.createGain();
+        o.type = type || "sine"; o.frequency.setValueAtTime(f, t0 + at);
+        g.gain.setValueAtTime(0.0001, t0 + at);
+        g.gain.exponentialRampToValueAtTime(vol || 0.12, t0 + at + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+        o.connect(g).connect(c.destination);
+        o.start(t0 + at); o.stop(t0 + at + dur + 0.02);
+      }
+    } catch {}
+  },
+  tap() { this.play([[660, 0, 0.06]], "sine", 0.06); },
+  check() { this.play([[784, 0, 0.09], [1175, 0.07, 0.14]], "sine", 0.1); },
+  uncheck() { this.play([[523, 0, 0.1]], "sine", 0.06); },
+  streak() { this.play([[523, 0, 0.14], [659, 0.1, 0.14], [784, 0.2, 0.14], [1047, 0.3, 0.32], [1319, 0.3, 0.32]], "triangle", 0.11); },
+  badge() { this.play([[880, 0, 0.12], [1109, 0.09, 0.12], [1319, 0.18, 0.26]], "triangle", 0.1); },
+  level() { this.play([[392, 0, 0.12], [523, 0.1, 0.12], [659, 0.2, 0.12], [784, 0.3, 0.3]], "triangle", 0.1); }
+};
+// Un toque suave en cualquier botón; el check-in y las celebraciones tienen su propio sonido
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("button");
+  if (!b || b.disabled || b.classList.contains("check") || b.closest(".celebrate")) return;
+  Sound.tap();
+}, true);
+
 /* ---------- Acciones ---------- */
 let popId = null;
 function toggle(k, id, ev) {
@@ -794,6 +858,7 @@ function toggle(k, id, ev) {
   if (!Object.keys(day).length) delete S.log[k];
   const nowDone = isDone(k, id);
   try { if (nowDone && navigator.vibrate) navigator.vibrate(15); } catch {}
+  if (nowDone) Sound.check(); else Sound.uncheck();
   commit();
   popId = nowDone ? id : null;
   render();
@@ -934,8 +999,6 @@ function viewAuth() {
       btn("Crear cuenta", "", () => { authMode = "register"; authMsg = ""; render(); }, { "aria-pressed": String(reg) })),
     form,
     el("div", { class: "stack", style: "gap:10px" },
-      el("div", { class: "or" }, "o"),
-      btn("Probar con datos de ejemplo", "btn ghost block", () => { Auth.clear(); S = sampleData(); evaluateBadges(); freshBadges = []; screen = "app"; tab = "hoy"; render(); }),
       el("span", { class: "hint", style: "text-align:center" }, Backend.mode === "firebase" ? "Tu cuenta funciona en cualquier celular con HabitFlow." : Backend.isRemote() ? "Tu cuenta funciona en cualquier celular con este enlace." : "En esta versión la cuenta vive en este dispositivo.")))];
 }
 
@@ -1165,6 +1228,9 @@ function metricRow(type) {
     el("td", { class: "n" }, `≤ ${g.goal.toLocaleString("es-CO")} ${g.unit}`), el("td", {}, pill));
 }
 
+const DEV_KEY = "habitflow:dev";
+let devMode = lsGet(DEV_KEY) === true, verTaps = 0, verTapAt = 0;
+function setDevMode(v) { devMode = !!v; lsSet(DEV_KEY, devMode); }
 function viewPerfil() {
   const byNet = {};
   for (const m of S.metrics.sync || []) (byNet[m.net] || (byNet[m.net] = [])).push(m.v);
@@ -1182,13 +1248,20 @@ function viewPerfil() {
       el("section", { class: "sheet" }, el("h2", {}, "Guarda tu progreso"), el("span", { class: "muted" }, "Crea una cuenta con tu correo para guardar tus hábitos y verlos desde cualquier celular."),
         el("div", { class: "row wrap" }, btn("Crear cuenta", "btn primary small", () => { screen = "auth"; authMode = "register"; authMsg = ""; render(); }), btn("Iniciar sesión", "btn small ghost", () => { screen = "auth"; authMode = "login"; authMsg = ""; render(); }))),
     el("section", { class: "sheet" },
-      el("h2", {}, "Sincronización"),
+      el("h2", {}, "Preferencias"),
+      el("label", { class: "switch" }, el("span", {}, "Sonidos"),
+        el("input", { type: "checkbox", role: "switch", checked: Sound.on, onchange: (e) => { Sound.on = e.target.checked; if (Sound.on) Sound.check(); } }))),
+    el("section", { class: "sheet" },
+      el("h2", {}, "Tu progreso"),
       syncLine(),
       el("dl", { class: "kv" },
         el("dt", {}, "Hábitos activos"), el("dd", {}, activeHabits().length),
-        el("dt", {}, "Check-ins guardados"), el("dd", {}, totalCheckins()),
-        el("dt", {}, "Tipo de red detectada"), el("dd", {}, (navigator.connection && navigator.connection.effectiveType) || "no disponible"))),
-    el("section", { class: "stack" },
+        el("dt", {}, "Check-ins guardados"), el("dd", {}, totalCheckins()))),
+    devMode ? el("section", { class: "stack devpanel" },
+      el("div", { class: "row", style: "justify-content:space-between" }, el("strong", {}, "Panel técnico"), btn("Ocultar", "btn small ghost", () => { setDevMode(false); render(); })),
+      el("dl", { class: "kv" },
+        el("dt", {}, "Almacenamiento"), el("dd", {}, Backend.mode === "firebase" ? "Firebase (Auth + Firestore)" : Backend.mode === "cloud" ? "Nube del enlace (cifrada)" : "Solo este dispositivo"),
+        el("dt", {}, "Tipo de red detectada"), el("dd", {}, (navigator.connection && navigator.connection.effectiveType) || "no disponible")),
       el("div", { class: "stack", style: "gap:4px" }, el("h2", {}, "Mediciones de requerimientos no funcionales"),
         el("span", { class: "muted", style: "font-size:.88rem" }, "La app mide sola cada check-in, sincronización, apertura, inicio de sesión, recordatorio y dibujo de Progreso. Se compara el percentil 95 (P95) con la meta.")),
       el("div", { class: "tbl-wrap" }, el("table", {},
@@ -1197,7 +1270,7 @@ function viewPerfil() {
       Object.keys(byNet).length ? el("span", { class: "muted", style: "font-size:.85rem" }, "Sincronización por red: " + Object.entries(byNet).map(([n, v]) => `${n}: ${v.length} medidas, P95 ${Math.round(pct(v, 95))} ms`).join(" · ")) : null,
       el("div", { class: "row wrap" },
         btn("Exportar mediciones (CSV)", "btn small", () => offerFile("habitflow-mediciones.csv", csvMetrics())),
-        btn("Borrar mediciones", "btn small ghost", () => { S.metrics = emptyState().metrics; commit(); render(); }))),
+        btn("Borrar mediciones", "btn small ghost", () => { S.metrics = emptyState().metrics; commit(); render(); }))) : null,
     el("section", { class: "stack" }, el("h2", {}, "Mis datos"),
       el("div", { class: "row wrap" },
         btn("Exportar registros (CSV)", "btn small", () => offerFile("habitflow-registros.csv", csvHabits())),
@@ -1222,7 +1295,11 @@ function viewPerfil() {
             else showToast("No se pudo eliminar la cuenta. Revisa tu internet.", 4000);
           }
         })) : null),
-    el("p", { class: "muted", style: "font-size:.8rem;margin:0" }, Backend.mode === "firebase" ? `HabitFlow${APP_BUILD ? " 1.0." + APP_BUILD : ""} · MVP. Los cambios se guardan primero en el celular y luego se envían a Firebase (Firestore).` : "HabitFlow · prototipo MVP. Los cambios se guardan primero en el celular y luego se envían cifrados a la nube.")
+    // Tocar 5 veces la versión abre el panel técnico (mediciones de RNF para la evaluación del proyecto)
+    el("button", { type: "button", class: "ver", onclick: () => {
+      verTaps = Date.now() - verTapAt < 1500 ? verTaps + 1 : 1; verTapAt = Date.now();
+      if (verTaps >= 5) { verTaps = 0; setDevMode(!devMode); showToast(devMode ? "Panel técnico activado" : "Panel técnico oculto"); render(); }
+    } }, `HabitFlow ${APP_BUILD ? "1.0." + APP_BUILD : "MVP"}`)
   ];
 }
 
@@ -1250,6 +1327,12 @@ function render() {
 }
 
 /* ---------- Arranque ---------- */
+function hideSplash() {
+  const sp = document.getElementById("splash");
+  if (!sp) return;
+  const wait = REDUCED ? 0 : Math.max(0, 1300 - performance.now());
+  setTimeout(() => { sp.classList.add("gone"); setTimeout(() => sp.remove(), 450); }, wait);
+}
 (async function boot() {
   Backend.init();
   if (await Auth.restore()) {
@@ -1257,6 +1340,7 @@ function render() {
     S = normalize(cached || emptyState());
     screen = "app";
     render();
+    hideSplash();
     afterPaint(() => { recordMetric("load", performance.now()); saveLocal(); });
     // Trae la versión de la nube si es más reciente
     try {
@@ -1274,6 +1358,7 @@ function render() {
   } else {
     screen = "auth";
     render();
+    hideSplash();
   }
   scheduleNative();
   checkReminders();
