@@ -1,0 +1,23 @@
+# Compila el .apk de HabitFlow en GitHub cada vez que se sube un cambio.
+# El archivo queda en la pestaña Actions > la ejecución > Artifacts > habitflow-apk.
+name: Compilar APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - run: npm ci || npm install
+      - run: npx cap sync android
+      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: habitflow-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

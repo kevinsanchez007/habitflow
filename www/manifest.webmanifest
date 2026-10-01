@@ -1,0 +1,12 @@
+{
+  "name": "HabitFlow",
+  "short_name": "HabitFlow",
+  "description": "Control de hábitos, rutinas y rachas",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F2F4F0",
+  "theme_color": "#2E6A4D",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
