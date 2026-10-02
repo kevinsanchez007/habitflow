@@ -90,6 +90,8 @@ h2{font-size:1.05rem;font-weight:700}
 .check:active{transform:scale(.9)}
 .check:disabled{opacity:.5;cursor:not-allowed}
 .check:disabled:active{transform:none}
+.meta .win{color:var(--muted)}
+.meta .win.late{color:var(--bad)}
 .readonly-note{font-size:.85rem;color:var(--muted);text-align:center}
 .cat{display:inline-block;font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--accent-soft);color:var(--fg)}
 .empty{border:1px dashed var(--line);border-radius:var(--r);padding:22px;text-align:center;color:var(--muted)}
@@ -308,7 +310,7 @@ function lsDel(k) { try { localStorage.removeItem(k); } catch {} }
 // Copia local del progreso del usuario con sesión (permite abrir sin internet)
 function saveLocal() { if (Auth.session && !testMode) lsSet(cacheKey(Auth.session.id), S); }
 function emptyState() {
-  return { v: 2, updatedAt: 0, profile: { name: "", email: "" }, habits: [], log: {}, badges: {}, usedTemplate: false, sample: false,
+  return { v: 2, updatedAt: 0, profile: { name: "", email: "" }, habits: [], log: {}, badges: {}, usedTemplate: false, sample: false, celebrated: { level: 1, streakDay: "" },
            metrics: { checkin: [], sync: [], load: [], render: [], reminder: [], login: [] } };
 }
 function normalize(x) {
@@ -398,6 +400,29 @@ function compliance(days, habitId) {
 }
 // RN-02: solo se marca o desmarca hoy; ayer y anteayer se ven pero quedan como terminaron
 function editable(k) { const t = todayKey(); return k <= t && k >= addDays(t, -DIAS_EDITABLES); }
+// Un hábito con hora solo se marca desde esa hora hasta VENTANA_MIN minutos después (12:00 → hasta 13:00).
+// Los hábitos sin hora se pueden marcar todo el día. En el modo de prueba no hay ventana.
+const VENTANA_MIN = 60;
+const hmToMin = t => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const minToHm = m => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
+function windowOf(h) { if (!h.time) return null; const a = hmToMin(h.time); return { start: a, end: Math.min(a + VENTANA_MIN, 24 * 60) }; }
+function nowMin() { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
+function markable(k, h) {
+  if (!editable(k)) return false;
+  const w = windowOf(h);
+  if (!w || testMode) return true;
+  const m = nowMin();
+  return m >= w.start && m < w.end;
+}
+// Texto corto para el usuario: cuándo puede marcar el hábito de hoy
+function windowLabel(k, h) {
+  const w = windowOf(h);
+  if (!w || testMode || k !== todayKey() || isDone(k, h.id)) return "";
+  const m = nowMin();
+  if (m < w.start) return `se marca de ${h.time} a ${minToHm(w.end)}`;
+  if (m < w.end) return `hasta las ${minToHm(w.end)}`;
+  return "tiempo vencido";
+}
 
 /* ---------- 4) Gamificación ---------- */
 const BADGES = [
@@ -843,7 +868,7 @@ function scheduleNative() {
         for (const d of h.days) list.push({
           id: (i + 1) * 10 + d, channelId: CH_REMIND,
           title: "Es hora de: " + h.name,
-          body: "Toca para abrir HabitFlow y marcarlo como hecho.",
+          body: `Tienes hasta las ${minToHm(windowOf(h).end)} para marcarlo como hecho.`,
           smallIcon: "ic_stat_icon", iconColor: "#2E6A4D", sound: "recordatorio.wav",
           extra: { habit: h.id },
           // second: 0 → suena al inicio del minuto (sin esto Android toma los segundos del momento en que se programó)
@@ -861,12 +886,16 @@ function scheduleNative() {
 function streakReminders() {
   const out = [], now = Date.now(), today = todayKey();
   for (let i = 0; i < RACHA_DIAS; i++) {
-    const k = addDays(today, i), { total, done } = dayStatus(k);
-    if (!total || done === total) continue;
-    const streak = i === 0 ? currentStreak() : 0, faltan = total - done;
+    const k = addDays(today, i), pend = scheduledOn(k).filter(h => !isDone(k, h.id));
+    if (!pend.length) continue;
+    const streak = i === 0 ? currentStreak() : 0;
     RACHA_AVISOS.forEach(([hour, minute], j) => {
       const at = fromKey(k); at.setHours(hour, minute, 0, 0);
       if (at.getTime() <= now) return;
+      // Si a esa hora ya venció la ventana de algún hábito pendiente, la racha ya se perdió: no se avisa
+      const T = hour * 60 + minute;
+      if (pend.some(h => { const w = windowOf(h); return w && w.end <= T; })) return;
+      const faltan = pend.length;
       out.push({
         id: RACHA_NOTIF_BASE + i * RACHA_AVISOS.length + j, channelId: CH_STREAK,
         title: streak > 0 ? `Tu racha de ${streak} ${streak === 1 ? "día" : "días"} está en riesgo` : "No pierdas tu racha",
@@ -968,14 +997,23 @@ function nextFx() {
   setTimeout(() => burst(medal, 14), REDUCED ? 0 : 320);
   setTimeout(close, 2800);
 }
+// Cada celebración sale una sola vez: la racha una vez por día y cada nivel una sola vez,
+// aunque el usuario marque y desmarque el mismo hábito varias veces.
 function flushCelebrations(prev) {
-  if (prev && currentStreak() > prev.streak) {
+  const cel = S.celebrated || (S.celebrated = { level: 1, streakDay: "" });
+  let changed = false;
+  if (prev && currentStreak() > prev.streak && cel.streakDay !== todayKey()) {
+    cel.streakDay = todayKey(); changed = true;
     const n = currentStreak();
     celebrate({ kind: "streak", title: `¡Racha de ${n} ${n === 1 ? "día" : "días"}!`, sub: "Cumpliste todos tus hábitos de hoy." });
   }
   for (const b of freshBadges) celebrate({ kind: "badge", title: `Logro: ${b.name}`, sub: `${b.req} · +${b.xp} XP` });
   freshBadges = [];
-  if (prev && level().n > prev.level) celebrate({ kind: "level", value: level().n, title: `¡Subiste al nivel ${level().n}!`, sub: `Llevas ${xp()} XP en total.` });
+  if (prev && level().n > prev.level && level().n > (cel.level || 1)) {
+    cel.level = level().n; changed = true;
+    celebrate({ kind: "level", value: level().n, title: `¡Subiste al nivel ${level().n}!`, sub: `Llevas ${xp()} XP en total.` });
+  }
+  if (changed) commit();
 }
 
 /* Sonidos sencillos generados en el momento (sin archivos de audio). Se pueden apagar en Perfil. */
@@ -1018,6 +1056,8 @@ const Sound = {
 document.addEventListener("pointerdown", e => {
   if (e.button > 0) return;
   Sound.ac(); // prepara el audio desde el primer toque
+  const sum = e.target.closest && e.target.closest("summary, label.pick, .switch, input[type=checkbox], select");
+  if (sum && !e.target.closest("button")) { if (!sum.closest(".owned") && !(sum.matches("input") && sum.disabled)) Sound.tap(); return; }
   const b = e.target.closest && e.target.closest("button");
   if (!b || b.disabled || b.closest(".celebrate")) return;
   if (b.classList.contains("check")) { if (!b.disabled && b.getAttribute("aria-disabled") !== "true") (b.getAttribute("aria-pressed") === "true" ? Sound.uncheck() : Sound.check()); return; }
@@ -1027,7 +1067,8 @@ document.addEventListener("pointerdown", e => {
 /* ---------- Acciones ---------- */
 let popId = null;
 function toggle(k, id, ev) {
-  if (!editable(k)) return;
+  const hab = S.habits.find(x => x.id === id);
+  if (!hab || !markable(k, hab)) return;
   const t0 = ev && ev.timeStamp ? ev.timeStamp : performance.now();
   const prev = { streak: currentStreak(), level: level().n };
   const day = S.log[k] || (S.log[k] = {});
@@ -1214,8 +1255,9 @@ function viewHoy() {
       return el("div", { class: "habit" + (done ? " done" : "") },
         el("div", { class: "info" },
           el("div", { class: "name" }, h.name),
-          el("div", { class: "meta row", style: "gap:8px" }, el("span", { class: "cat" }, h.cat), h.time || "", done && S.log[k][h.id] ? `· hecho ${S.log[k][h.id].slice(0, 5)}` : "")),
-        el("button", { type: "button", class: "check" + (popId === h.id ? " pop" : ""), "data-hid": h.id, "aria-pressed": String(done), "aria-label": (done ? "Desmarcar " : "Marcar ") + h.name, disabled: !editable(k), html: CHECK_SVG, onclick: (e) => toggle(k, h.id, e) }));
+          el("div", { class: "meta row", style: "gap:8px" }, el("span", { class: "cat" }, h.cat), h.time || "", done && S.log[k][h.id] ? `· hecho ${S.log[k][h.id].slice(0, 5)}` : "",
+            windowLabel(k, h) ? el("span", { class: "win" + (windowLabel(k, h) === "tiempo vencido" ? " late" : "") }, "· " + windowLabel(k, h)) : null)),
+        el("button", { type: "button", class: "check" + (popId === h.id ? " pop" : ""), "data-hid": h.id, "aria-pressed": String(done), "aria-label": (done ? "Desmarcar " : "Marcar ") + h.name, disabled: !markable(k, h), html: CHECK_SVG, onclick: (e) => toggle(k, h.id, e) }));
     })) : el("div", { class: "empty" }, S.habits.length ? "Nada programado este día. Descansa o revisa tus hábitos." : "Aún no tienes hábitos.", el("br"),
       !S.habits.length ? btn("Crear mi primer hábito", "btn primary", () => { tab = "habitos"; editing = "new"; render(); }, { style: "margin-top:12px" }) : null),
     syncLine()
@@ -1373,7 +1415,8 @@ function habitForm(h) {
     el("div", { class: "field" }, el("label", { for: "f-name" }, "Nombre"), name),
     el("div", { class: "field" }, el("label", { for: "f-cat" }, "Categoría"), cat),
     el("div", { class: "field" }, el("span", { style: "font-size:.85rem;font-weight:600" }, "Días"), days),
-    el("div", { class: "field" }, el("label", { for: "f-time" }, "Hora objetivo"), time),
+    el("div", { class: "field" }, el("label", { for: "f-time" }, "Hora objetivo"), time,
+      el("small", { class: "muted", style: "font-size:.8rem" }, "Tendrás 1 hora desde esta hora para marcarlo. Sin hora, se marca todo el día.")),
     el("label", { class: "switch", for: "f-remind" }, remind, "Recordarme a esa hora"),
     err,
     el("div", { class: "row wrap" }, el("button", { type: "submit", class: "btn primary" }, isNew ? "Crear hábito" : "Guardar"), btn("Cancelar", "btn ghost", () => { editing = null; render(); })));
@@ -1642,6 +1685,15 @@ function hideSplash() {
   setupPush();
   checkReminders();
   setInterval(checkReminders, 15000);
+  // Si se abre o se cierra la ventana de 1 hora de algún hábito, se redibuja Hoy
+  let winSig = "";
+  setInterval(() => {
+    if (screen !== "app" || tab !== "hoy" || document.hidden) return;
+    const k = addDays(todayKey(), -dayOffset);
+    const sig = k + scheduledOn(k).map(h => (markable(k, h) ? 1 : 0) + windowLabel(k, h)).join("|");
+    if (winSig && winSig !== sig) render();
+    winSig = sig;
+  }, 20000);
   checkUpdate();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkReminders(); checkUpdate(); if (screen === "app" && tab === "hoy") render(); } });
 })();

@@ -1,7 +1,8 @@
 {
   "titulo": "Novedades de esta versión",
   "items": [
-    "Los días pasados ya no se pueden cambiar: ayer y anteayer quedan tal como terminaron, así que si fallas un día pierdes la racha.",
-    "Nuevo aviso de racha en riesgo: a las 8:00 p. m. y a las 10:30 p. m., si te faltan hábitos del día, te llega una notificación con sonido."
+    "Los hábitos con hora ahora tienen 1 hora para marcarse: si es a las 12:00, puedes marcarlo hasta la 1:00 p. m.",
+    "Las celebraciones de racha y de nivel salen una sola vez, aunque marques y desmarques un hábito.",
+    "Ahora suenan los toques en la sección Hábitos, también al desplegar rutinas y elegir hábitos."
   ]
 }
