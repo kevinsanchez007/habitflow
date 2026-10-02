@@ -88,6 +88,9 @@ h2{font-size:1.05rem;font-weight:700}
 .habit.done .check{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
 .habit.done .check svg{opacity:1}
 .check:active{transform:scale(.9)}
+.check:disabled{opacity:.5;cursor:not-allowed}
+.check:disabled:active{transform:none}
+.readonly-note{font-size:.85rem;color:var(--muted);text-align:center}
 .cat{display:inline-block;font-size:.72rem;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--accent-soft);color:var(--fg)}
 .empty{border:1px dashed var(--line);border-radius:var(--r);padding:22px;text-align:center;color:var(--muted)}
 /* Progreso */
@@ -279,7 +282,7 @@ details.tpl[open] .tbody{animation:rise .25s ease-out}
    ===================================================================== */
 
 const MAX_ACTIVOS = 15;         // RN-04 (antes 5; ampliado a 15 a pedido del equipo)
-const DIAS_EDITABLES = 2;       // RN-02 (hoy + 2 días atrás)
+const DIAS_EDITABLES = 0;       // RN-02 (solo hoy; antes hoy + 2 días atrás)
 const XP_CHECKIN = 10, XP_NIVEL = 100;
 const PBKDF2_ITER = 150000;
 const CATEGORIAS = ["Salud", "Ejercicio", "Mente", "Estudio", "Hogar", "Otro"];
@@ -393,7 +396,7 @@ function compliance(days, habitId) {
   }
   return tot ? Math.round(done / tot * 100) : null;
 }
-// RN-02: solo hoy, ayer y anteayer
+// RN-02: solo se marca o desmarca hoy; ayer y anteayer se ven pero quedan como terminaron
 function editable(k) { const t = todayKey(); return k <= t && k >= addDays(t, -DIAS_EDITABLES); }
 
 /* ---------- 4) Gamificación ---------- */
@@ -790,11 +793,14 @@ const Native = window.Capacitor && window.Capacitor.isNativePlatform && window.C
 let nativeTimer = null;
 /* Canales de Android: "recordatorios" tiene importancia máxima (aparece arriba en la pantalla,
    como WhatsApp), sonido propio (res/raw/recordatorio.wav) y vibración. */
-const CH_REMIND = "recordatorios", CH_UPDATE = "actualizaciones", UPDATE_NOTIF_ID = 9000;
+const CH_REMIND = "recordatorios", CH_UPDATE = "actualizaciones", CH_STREAK = "racha", UPDATE_NOTIF_ID = 9000;
+// Aviso de racha en riesgo: si a estas horas faltan hábitos del día, suena un recordatorio
+const RACHA_AVISOS = [[20, 0], [22, 30]], RACHA_NOTIF_BASE = 8000, RACHA_DIAS = 7;
 let channelsReady = null;
 function nativeChannels(LN) {
   return channelsReady || (channelsReady = Promise.all([
     LN.createChannel({ id: CH_REMIND, name: "Recordatorios de hábitos", description: "Aviso a la hora de cada hábito", importance: 5, visibility: 1, sound: "recordatorio.wav", vibration: true, lights: true, lightColor: "#2E6A4D" }),
+    LN.createChannel({ id: CH_STREAK, name: "Racha en riesgo", description: "Aviso en la noche si faltan hábitos para mantener la racha", importance: 5, visibility: 1, sound: "recordatorio.wav", vibration: true, lights: true, lightColor: "#2E6A4D" }),
     LN.createChannel({ id: CH_UPDATE, name: "Actualizaciones", description: "Aviso cuando hay una versión nueva de HabitFlow", importance: 4, visibility: 1, vibration: true })
   ]).catch(() => {}));
 }
@@ -844,9 +850,36 @@ function scheduleNative() {
           schedule: { on: { weekday: d + 1, hour, minute, second: 0 }, allowWhileIdle: true }
         });
       });
+      list.push(...streakReminders());
       if (list.length) { await LN.schedule({ notifications: list }); ensureExactAlarms(LN); }
     } catch {}
   }, 800);
+}
+/* Racha en riesgo: para hoy y los próximos días con hábitos pendientes se programan avisos a las
+   20:00 y 22:30. Cada vez que el usuario marca algo se reprograman, así que si ya completó el día
+   el aviso se cancela; si no abre la app, el aviso llega igual porque el día sigue incompleto. */
+function streakReminders() {
+  const out = [], now = Date.now(), today = todayKey();
+  for (let i = 0; i < RACHA_DIAS; i++) {
+    const k = addDays(today, i), { total, done } = dayStatus(k);
+    if (!total || done === total) continue;
+    const streak = i === 0 ? currentStreak() : 0, faltan = total - done;
+    RACHA_AVISOS.forEach(([hour, minute], j) => {
+      const at = fromKey(k); at.setHours(hour, minute, 0, 0);
+      if (at.getTime() <= now) return;
+      out.push({
+        id: RACHA_NOTIF_BASE + i * RACHA_AVISOS.length + j, channelId: CH_STREAK,
+        title: streak > 0 ? `Tu racha de ${streak} ${streak === 1 ? "día" : "días"} está en riesgo` : "No pierdas tu racha",
+        body: j < RACHA_AVISOS.length - 1
+          ? (i === 0 ? (faltan === 1 ? "Te falta 1 hábito de hoy. Complétalo antes de medianoche." : `Te faltan ${faltan} hábitos de hoy. Complétalos antes de medianoche.`) : "Aún te faltan hábitos de hoy. Complétalos antes de medianoche.")
+          : "Última llamada: quedan pocas horas para completar los hábitos de hoy.",
+        smallIcon: "ic_stat_icon", iconColor: "#2E6A4D", sound: "recordatorio.wav",
+        extra: { habit: "racha" },
+        schedule: { at, allowWhileIdle: true }
+      });
+    });
+  }
+  return out;
 }
 /* Avisos push (Firebase Cloud Messaging): el celular se suscribe al tema "actualizaciones" y
    GitHub envía el aviso al publicar cada versión, aunque la app esté cerrada. */
@@ -1175,13 +1208,14 @@ function viewHoy() {
         el("span", { class: "muted", style: "font-size:.9rem" }, st.total ? `${st.done} de ${st.total} hábitos cumplidos` : "No hay hábitos programados este día"))),
     el("div", { class: "seg", role: "group", "aria-label": "Día a registrar" },
       ...[["Hoy", 0], ["Ayer", 1], ["Anteayer", 2]].map(([l, o]) => btn(l, "", () => { dayOffset = o; render(); }, { "aria-pressed": String(dayOffset === o) }))),
+    !editable(k) ? el("p", { class: "readonly-note" }, "Este día ya terminó: se muestra tal como quedó y no se puede cambiar.") : null,
     list.length ? el("section", { class: "stack", "aria-label": "Hábitos del día" }, list.map(h => {
       const done = isDone(k, h.id);
       return el("div", { class: "habit" + (done ? " done" : "") },
         el("div", { class: "info" },
           el("div", { class: "name" }, h.name),
           el("div", { class: "meta row", style: "gap:8px" }, el("span", { class: "cat" }, h.cat), h.time || "", done && S.log[k][h.id] ? `· hecho ${S.log[k][h.id].slice(0, 5)}` : "")),
-        el("button", { type: "button", class: "check" + (popId === h.id ? " pop" : ""), "data-hid": h.id, "aria-pressed": String(done), "aria-label": (done ? "Desmarcar " : "Marcar ") + h.name, html: CHECK_SVG, onclick: (e) => toggle(k, h.id, e) }));
+        el("button", { type: "button", class: "check" + (popId === h.id ? " pop" : ""), "data-hid": h.id, "aria-pressed": String(done), "aria-label": (done ? "Desmarcar " : "Marcar ") + h.name, disabled: !editable(k), html: CHECK_SVG, onclick: (e) => toggle(k, h.id, e) }));
     })) : el("div", { class: "empty" }, S.habits.length ? "Nada programado este día. Descansa o revisa tus hábitos." : "Aún no tienes hábitos.", el("br"),
       !S.habits.length ? btn("Crear mi primer hábito", "btn primary", () => { tab = "habitos"; editing = "new"; render(); }, { style: "margin-top:12px" }) : null),
     syncLine()
